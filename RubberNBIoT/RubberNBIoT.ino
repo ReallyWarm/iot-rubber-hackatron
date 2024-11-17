@@ -15,15 +15,20 @@
 #define SWITCH_SENSOR 7
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-const uint8_t deviceID = 1;
-enum class States {
-  SAMPLING, // sampling in 5 mins time, sleep for 15 mins, repeat 9 times
-  DEEP_SLEEP, // going deep sleep, leave when hour = 21
-  CALI_SLEEP // calibrate deep sleep time max = 6 hr, if server timeout sleep 3 hr
-};
+#define TO_SLEEP_MASK 0b10000000  // Bit 7 (MSB) for toSleep
+#define DEBUG_MASK    0b01000000  // Bit 6 for debug
+#define STATE_MASK    0b00110000  // Bits 4-5 for state
+#define STATE_SHIFT   4           // Right-shift to extract state bits
 
-#define samplingCycle 9 // 9
-#define samplingTimes 5 // 5
+// State values
+#define STATE_DEEP_SLEEP 0b00  // 00 for Deep Sleep
+#define STATE_SAMPLING   0b01  // 01 for Sampling
+#define STATE_CALI_SLEEP 0b10  // 10 for Calibrate
+
+const char deviceID = 'a';
+
+#define samplingCycle 3 // 9
+#define samplingTimes 1 // 5
 uint16_t battery = 0;
 SoftwareSerial mod(S51_RO, S51_DI);
 Adafruit_BME680 bme(&Wire);
@@ -32,67 +37,78 @@ const float offsetPercent = 0.89; // offset of exceeded sleep time
 const uint32_t secInHour = 3600;
 const uint32_t secInMinute = 60;
 
-States state = States::CALI_SLEEP;
 #define wakeTime 24 // wake up time 24
-#define sleepTime 3 // start sleep time 3
+#define sleepTime 23 // start sleep time 3
 #define sleepHour 6 // max hour to sleep
 #define timeoutSleep 3 // hour to sleep when timeout
 uint32_t tdSTime = 0; // total deep sleep
 uint32_t rmSTime = (uint32_t)secInHour * 21; // total remaining
 uint32_t diSTime = 0; // this deep sleep instance
-bool toSleep;
 
 AIS_NB_BC95 AISnb;
 UDPReceive dataResp;
 #define RESET_NB_PIN 4
 #define address "34.2.30.58"
 #define port "9999"
-#define cmdTime "{\"command\":\"TIME\"}"
-#define cmdDataStart "{\"command\":\"DATA\",\"data\":\"d:"
+#define cmdTime "{\"c\":\"t\",\"d\":\"%c\"}"
+#define cmdDataStart "{\"c\":\"d\",\"d\":\"%c%05u%05u%05u%05u%05u%05u%05u%05u%05u%05u\"}"
+#define DEBUG_FLAG ((flag & DEBUG_MASK) != 0) // Use a unique name instead of "debug"
+#define TO_SLEEP_FLAG ((flag & TO_SLEEP_MASK) != 0) // Use unique names for all macros
 const uint16_t millisTimeout = 30000;
 const uint8_t maxTimeout = 20;
 
+uint16_t moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0, pHValue = 0, temperature = 0, humidity = 0, pressure = 0;
+char message[75];
 
-bool debug = true;
+uint8_t flag = 0b01100000; // to sleep, debug , state (D, S, C) * 2, res, res, res, res
+
 
 void setup() {
   Serial.begin(9600);
   Serial.println(F("Setup..."));
   resetSensor();
-  AISnb.debug = debug;
+  AISnb.debug = DEBUG_FLAG;
   AISnb.setupDevice(port);
   AISnb.pingIP(address);
-  if (debug) showNBinfo();
+  if (DEBUG_FLAG) showNBinfo();
   Serial.println(F("Starting..."));
   delay(1000);
 }
 
 void loop() {
-  switch(state) {
-    case States::CALI_SLEEP:
-      if (debug) Serial.println(F("Calibrate..."));
-      toSleep = calibrateTime();
-      if (toSleep) {
-        state = States::DEEP_SLEEP;
-      }
-      else {
-        state = States::SAMPLING;
+  // Extract the current state from the flag
+  uint8_t state = (flag & STATE_MASK) >> STATE_SHIFT;
+
+  switch (state) {
+    case STATE_CALI_SLEEP:
+      if (flag & DEBUG_MASK) Serial.println(F("Calibrate..."));
+      if (flag & TO_SLEEP_MASK) {
+        // Set state to Deep Sleep
+        flag = (flag & ~STATE_MASK) | (STATE_DEEP_SLEEP << STATE_SHIFT);
+      } else {
+        // Set state to Sampling
+        flag = (flag & ~STATE_MASK) | (STATE_SAMPLING << STATE_SHIFT);
         resetTimeCount();
       }
       break;
-    case States::DEEP_SLEEP:
-      if (debug) Serial.println(F("Deep Sleep..."));
+
+    case STATE_DEEP_SLEEP:
+      if (flag & DEBUG_MASK) Serial.println(F("Deep Sleep..."));
       deepSleep();
-      state = States::CALI_SLEEP;
+      // Transition to Calibrate Sleep
+      flag = (flag & ~STATE_MASK) | (STATE_CALI_SLEEP << STATE_SHIFT);
       if (tdSTime >= ((uint32_t)secInHour * 21)) {
-        state = States::SAMPLING;
+        // Transition to Sampling if the condition is met
+        flag = (flag & ~STATE_MASK) | (STATE_SAMPLING << STATE_SHIFT);
         resetTimeCount();
       }
       break;
-    case States::SAMPLING:
-      if (debug) Serial.println(F("Sampling..."));
+
+    case STATE_SAMPLING:
+      if (flag & DEBUG_MASK) Serial.println(F("Sampling..."));
       sampling();
-      state = States::CALI_SLEEP;
+      // Transition to Calibrate Sleep
+      flag = (flag & ~STATE_MASK) | (STATE_CALI_SLEEP << STATE_SHIFT);
       break;
   }
 }
@@ -107,27 +123,37 @@ bool calibrateTime() {
   if (!pingR.status) {
     resetConnection(true);
   }
-  udp = sendNBmsg(cmdTime, true);
+  snprintf(
+    message, sizeof(message),
+    cmdTime,
+    deviceID
+  );
+  udp = sendNBmsg(message, true);
 
   while ((dataResp.data == "") || (strncmp("400", hexToAscii(dataResp.data).c_str(), 3) == 0)) {
     if (timeout >= maxTimeout) {
       Serial.println(F("Timeout!"));
-      if (debug) AISnb.pingIP(address);
+      if (DEBUG_FLAG) AISnb.pingIP(address);
       uint16_t totalTimeout = (millisTimeout / 1000) * maxTimeout;
       if (rmSTime > totalTimeout) {
         rmSTime -= totalTimeout;
         tdSTime += totalTimeout;
       }
       diSTime = (rmSTime > (timeoutSleep * secInHour) ) ? (timeoutSleep * secInHour) : rmSTime;
-      if (debug) showTimeInfo();
-      return true;
+      if (DEBUG_FLAG) showTimeInfo();
+      flag |= (1 << 0);
     }
     if (cnt >= millisTimeout) {
       Serial.println(F("Resending from timeout..."));
       if (timeout == maxTimeout / 2) {
         resetConnection(true);
       }
-      udp = sendNBmsg(cmdTime, false);
+      snprintf(
+        message, sizeof(message),
+        cmdTime,
+        deviceID
+      );
+      udp = sendNBmsg(message, false);
       cnt = 0;
       timeout++;
     }
@@ -145,16 +171,16 @@ bool calibrateTime() {
 
   uint8_t hour = (uint8_t) timeArray[0].toInt();
   uint8_t min = (uint8_t) timeArray[1].toInt();
-  if (debug) showServerTime(hour, min);
+  if (DEBUG_FLAG) showServerTime(hour, min);
   if ( (hour < wakeTime) && (hour >= sleepTime) ) {
     uint8_t remainHour = wakeTime - hour - 1;
     uint8_t remainMin = 60 - min;
     rmSTime = (remainHour * secInHour) + (remainMin * secInMinute);
     diSTime = (rmSTime > (sleepHour * secInHour) ) ? (sleepHour * secInHour) : rmSTime;
-    if (debug) showTimeInfo();
-    return true;
+    if (DEBUG_FLAG) showTimeInfo();
+    flag |= (1 << 0);
   }
-  return false;
+  flag &= ~(1 << 0);
 }
 
 void deepSleep() {
@@ -162,52 +188,49 @@ void deepSleep() {
   longSleep(diSTime * offsetPercent);
   tdSTime += diSTime;
   rmSTime -= diSTime;
-  if (debug) Serial.println(F("Wake up!"));
-  if (debug) showTimeInfo();
+  if (DEBUG_FLAG) Serial.println(F("Wake up!"));
+  if (DEBUG_FLAG) showTimeInfo();
 }
 
 void sampling() {
   uint8_t getSensorSec = 7, sendDataSec = 14;
-  uint16_t moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0;
-  float pHValue = 0.0, temperature = 0.0, humidity = 0.0, pressure = 0.0;
   // uint16_t moi = 0, cnd = 0, ntg = 0, php = 0, pts = 0;
   // float ph = 0.0, tmp = 0.0, hmd = 0.0, prs = 0.0;
-  String message = "";
   uint32_t delayCounter = 0;
   UDPSend udp;
   pingRESP pingR;
 
   for (int cycle = 0; cycle < samplingCycle; cycle++) {
     moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0;
-    pHValue = 0.0, temperature = 0.0, humidity = 0.0, pressure = 0.0;
+    pHValue = 0, temperature = 0, humidity = 0, pressure = 0;
     delayCounter = 0;
 
-    if (debug) Serial.print(F("Iteration: "));
-    if (debug) Serial.println(cycle + 1);
+    if (DEBUG_FLAG) Serial.print(F("Iteration: "));
+    if (DEBUG_FLAG) Serial.println(cycle + 1);
 
     // sample every 1 minute 5 times
     for (int i = 0; i < samplingTimes; i++) {
       startSwitch();
       startSensor();
       delay(3000);
-      getMoisture(&moisture);
+      getMoisture();
       delay(200);
-      getConduct(&conductivity);
+      getConduct();
       delay(200);
-      getNPK(&nitrogen, &phosphorus, &potassium);
+      getNPK();
       delay(200);
-      getPH(&pHValue);
+      getPH();
       delay(200);
       // getBME(&tmp, &hmd, &prs);
       // delay(200);
       resetSensor();
       endSwitch();
-      if (debug) Serial.print(F("Going minute "));
-      if (debug) Serial.print(i + 1);
-      if (debug) Serial.println(F(" sleep"));
+      if (DEBUG_FLAG) Serial.print(F("Going minute "));
+      if (DEBUG_FLAG) Serial.print(i + 1);
+      if (DEBUG_FLAG) Serial.println(F(" sleep"));
       delay(1000);
-      // longSleep((secInMinute - getSensorSec - 45) * offsetPercent); // in testing -45
-      longSleep((secInMinute - getSensorSec) * offsetPercent); 
+      longSleep((secInMinute - getSensorSec - 45) * offsetPercent); // in testing -45
+      // longSleep((secInMinute - getSensorSec) * offsetPercent); 
     }
     startSwitch();
     getBattery();
@@ -221,43 +244,25 @@ void sampling() {
     }
 
     Serial.print(F("Sending STR: "));
+    snprintf(
+        message, sizeof(message),
+        cmdDataStart,
+        deviceID, moisture,conductivity, nitrogen, phosphorus, battery, potassium, pHValue, temperature, humidity, pressure
+    );
     Serial.println(message);
-    message = 
-      cmdDataStart+String(deviceID)+",pn:1,tp:3"+
-      ",b:"+String(battery)+",t:"+String(temperature / 5.0)+",h:"+String(humidity / 5.0)+",p:"+String(pressure / 5.0)+
-      "\"}";
     udp = sendNBmsg(message, true);
     delay(3000);
-
-    Serial.print(F("Sending STR: "));
-    Serial.println(message);
-    message = 
-      cmdDataStart+String(deviceID)+",pn:2,tp:3"+
-      ",m:"+String(moisture / 5.0)+",pH:"+String(pHValue / 5.0)+",c:"+String(conductivity / 5.0)+
-      "\"}";
-    udp = sendNBmsg(message, true);
-    delay(3000);
-
-    Serial.print(F("Sending STR: "));
-    Serial.println(message);
-    message = 
-      cmdDataStart+String(deviceID)+",pn:3,tp:3"+
-      ",n:"+String(nitrogen / 5.0)+",pp:"+String(phosphorus / 5.0)+",pt:"+String(potassium / 5.0)+
-      "\"}";
-    udp = sendNBmsg(message, true);
-    delay(3000);
-    message = "";
 
     // Delay 15 minutes
-    if (debug) Serial.println(F("15 minutes delay starting..."));
+    if (DEBUG_FLAG) Serial.println(F("15 minutes delay starting..."));
     delay(2000);
-    // longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
-    longSleep(((secInMinute * 15) - sendDataSec) * offsetPercent);
+    longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
+    // longSleep(((secInMinute * 15) - sendDataSec) * offsetPercent);
   }
   delay(100);
 }
 
-UDPSend sendNBmsg(String data, bool resend) {
+UDPSend sendNBmsg(char * data, bool resend) {
   UDPSend udp;
   uint8_t maxRetry = 5;
   uint8_t retry = 0;
@@ -282,9 +287,18 @@ UDPSend sendNBmsg(String data, bool resend) {
 void resetConnection(bool force) {
   if (!AISnb.getNBConnect() || force) {
     Serial.println(F("Resetting NB"));
+    // pinMode(RESET_NB_PIN, OUTPUT);
+    // delay(100);
+    // digitalWrite(RESET_NB_PIN, HIGH);
+    // delay(200);
+    // digitalWrite(RESET_NB_PIN, LOW);
+    // delay(100);
+    // pinMode(RESET_NB_PIN, INPUT);
+    // delay(100);
+    // AISnb.setupDevice(port);
     AISnb.rebootModule();
     delay(10000);
-    if (debug) AISnb.pingIP(address);
+    if (DEBUG_FLAG) AISnb.pingIP(address);
   }
 }
 
@@ -367,21 +381,21 @@ void resetSensor() {
 
 void getBattery() {
   battery = analogRead(BAT_PIN);
-  if (debug) {
+  if (DEBUG_FLAG) {
     Serial.print(F("Battery: "));
     Serial.println(battery);
   }
 }
 
-void getMoisture(uint16_t* moisture) {
-  *moisture = analogRead(MOI_PIN);
-  if (debug) {
+void getMoisture() {
+  moisture = analogRead(MOI_PIN);
+  if (DEBUG_FLAG) {
     Serial.print(F("Moisture: "));
-    Serial.println(*moisture);
+    Serial.println(moisture);
   }
 }
 
-void getNPK(uint16_t* nitrogen, uint16_t* phosphorus, uint16_t* potassium) {
+void getNPK() {
   byte npkQuery[]= {0x01, 0x03, 0x00, 0x04, 0x00, 0x03, 0x44, 0x0a};
   byte npkResp[11] = { 0 };
   digitalWrite(S51_DE,HIGH);
@@ -394,7 +408,7 @@ void getNPK(uint16_t* nitrogen, uint16_t* phosphorus, uint16_t* potassium) {
   if (mod.available() >= sizeof(npkResp)) { 
     mod.readBytes(npkResp, sizeof(npkResp)); 
 
-    if (debug) {
+    if (DEBUG_FLAG) {
       for (int i = 0; i < sizeof(npkResp); i++) {
         Serial.print(npkResp[i], HEX);
         Serial.print(F(" "));
@@ -402,11 +416,11 @@ void getNPK(uint16_t* nitrogen, uint16_t* phosphorus, uint16_t* potassium) {
       Serial.println();
     }
 
-    *nitrogen += (npkResp[3] << 8) | npkResp[4];
-    *phosphorus += (npkResp[5] << 8) | npkResp[6];
-    *potassium += (npkResp[7] << 8) | npkResp[8];
+    nitrogen += (npkResp[3] << 8) | npkResp[4];
+    phosphorus += (npkResp[5] << 8) | npkResp[6];
+    potassium += (npkResp[7] << 8) | npkResp[8];
 
-    if (debug) {
+    if (DEBUG_FLAG) {
       Serial.print(F("Nitrogen: "));
       Serial.println((npkResp[3] << 8) | npkResp[4]);
       Serial.print(F("Phosphorus: "));
@@ -417,7 +431,7 @@ void getNPK(uint16_t* nitrogen, uint16_t* phosphorus, uint16_t* potassium) {
   }
 }
 
-void getPH(float* pH) {
+void getPH() {
   byte phQuery[]= {0x01, 0x03, 0x00, 0x03, 0x00, 0x01, 0x74, 0x0a};
   byte phResp[7] = { 0 };
   digitalWrite(S51_DE,HIGH);
@@ -430,7 +444,7 @@ void getPH(float* pH) {
   if (mod.available() >= sizeof(phResp)) { 
     mod.readBytes(phResp, sizeof(phResp)); 
 
-    if (debug) {
+    if (DEBUG_FLAG) {
       for (int i = 0; i < sizeof(phResp); i++) {
         Serial.print(phResp[i], HEX);
         Serial.print(F(" "));
@@ -438,17 +452,17 @@ void getPH(float* pH) {
       Serial.println();
     }
 
-    uint16_t phValue = (phResp[3] << 8) | phResp[4];
-    *pH += phValue / 10.0;
+    uint16_t pH = (phResp[3] << 8) | phResp[4];
+    pHValue += pH / 10.0;
 
-    if (debug) {
+    if (DEBUG_FLAG) {
       Serial.print(F("pH: "));
-      Serial.println(phValue / 10.0);
+      Serial.println(pH / 10.0);
     }
   }
 }
 
-void getConduct(uint16_t* conductivity) {
+void getConduct() {
   byte cdQuery[]= {0x01, 0x03, 0x00, 0x02, 0x00, 0x01, 0x25, 0xca};
   byte cdResp[7] = { 0 };
   digitalWrite(S51_DE,HIGH);
@@ -461,7 +475,7 @@ void getConduct(uint16_t* conductivity) {
   if (mod.available() >= sizeof(cdResp)) { 
     mod.readBytes(cdResp, sizeof(cdResp)); 
 
-    if (debug) {
+    if (DEBUG_FLAG) {
       for (int i = 0; i < sizeof(cdResp); i++) {
         Serial.print(cdResp[i], HEX);
         Serial.print(F(" "));
@@ -469,22 +483,24 @@ void getConduct(uint16_t* conductivity) {
       Serial.println();
     }
 
-    *conductivity += (cdResp[3] << 8) | cdResp[4];
+    conductivity += (cdResp[3] << 8) | cdResp[4];
 
-    if (debug) {
+    if (DEBUG_FLAG) {
       Serial.print(F("Conductivity: "));
       Serial.println((cdResp[3] << 8) | cdResp[4]);
     }
   }
 }
 
-void getBME(float* temperature, float* humidity, float* pressure) {
+void getBME() {
   bme.performReading();
-  *temperature += bme.temperature;
-  *humidity += bme.humidity;
-  *pressure += bme.pressure / 100.0;
+  temperature = (uint16_t) ((99.99 + temperature) * 100) / 2;
+  humidity = (uint16_t) ((99.99 + humidity) * 100) / 2;
+  pressure = (uint16_t) ((99.99 + pressure) * 100) / 2;
+  // humidity += bme.humidity;
+  // pressure += bme.pressure / 100.0;
 
-  if (debug) {
+  if (DEBUG_FLAG) {
     Serial.print(F("Temperature: "));
     Serial.print(bme.temperature);
     Serial.println(F(" *C"));
