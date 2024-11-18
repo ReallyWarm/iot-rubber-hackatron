@@ -1,6 +1,7 @@
 #include "LowPower.h"
 #include "AIS_NB_BC95.h"
 #include <SoftwareSerial.h>
+#include <EEPROM.h>
 
 #define BAT_PIN A0
 #define MOI_PIN A1
@@ -54,7 +55,9 @@ const uint8_t maxTimeout = 20;
 uint16_t moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0, pHValue = 0, temperature = 0, humidity = 0, pressure = 0;
 char message[75];
 
-uint8_t flag = 0b01100000; // to sleep, debug , state (D, S, C) * 2, res, res, res, res
+uint8_t flag = 0b01100000; // to sleep, debug , state (D, S, C) * 2, toSample, res, res, res
+
+void(* resetFunc) (void) = 0;
 
 
 void setup() {
@@ -65,6 +68,7 @@ void setup() {
   AISnb.setupDevice(port);
   AISnb.pingIP(address);
   if (DEBUG_FLAG) showNBinfo();
+  EEPROM.get(0, flag);
   Serial.println(F("Starting..."));
   delay(1000);
 }
@@ -73,10 +77,16 @@ void loop() {
   // Extract the current state from the flag
   uint8_t state = (flag & STATE_MASK) >> STATE_SHIFT;
 
+  if (flag & TO_SLEEP_MASK) {
+    flag = (flag & ~STATE_MASK) | (STATE_SAMPLING << STATE_SHIFT);
+  }
+
   switch (state) {
     case STATE_CALI_SLEEP:
       if (flag & DEBUG_MASK) Serial.println(F("Calibrate..."));
-      // calibrateTime();
+      calibrateTime();
+      EEPROM.put(0, flag);
+      resetFunc();
       if (flag & TO_SLEEP_MASK) {
         // Set state to Deep Sleep
         flag = (flag & ~STATE_MASK) | (STATE_DEEP_SLEEP << STATE_SHIFT);
@@ -138,7 +148,8 @@ void calibrateTime() {
       }
       diSTime = (rmSTime > (timeoutSleep * secInHour) ) ? (timeoutSleep * secInHour) : rmSTime;
       if (DEBUG_FLAG) showTimeInfo();
-      flag |= (1 << 0);
+      flag |= (1 << 7);
+      return ;
     }
     if (cnt >= millisTimeout) {
       Serial.println(F("Resending from timeout..."));
@@ -176,9 +187,11 @@ void calibrateTime() {
     rmSTime = (remainHour * secInHour) + (remainMin * secInMinute);
     diSTime = (rmSTime > (sleepHour * secInHour) ) ? (sleepHour * secInHour) : rmSTime;
     if (DEBUG_FLAG) showTimeInfo();
-    flag |= (1 << 0);
+    flag |= (1 << 7);
+    return ;
   }
-  flag &= ~(1 << 0);
+  flag &= ~(1 << 7);
+  return ;
 }
 
 void deepSleep() {
@@ -255,6 +268,10 @@ void sampling() {
     longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
     // longSleep(((secInMinute * 2) - sendDataSec) * offsetPercent);
   }
+  longSleep(((secInMinute * 5) - sendDataSec) * offsetPercent);
+  flag |= (1 << 7);
+  EEPROM.put(0, flag);
+  resetFunc();
   delay(100);
 }
 
