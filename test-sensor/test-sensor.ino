@@ -1,9 +1,9 @@
 #include "LowPower.h"
 #include <SoftwareSerial.h>
 #include <Wire.h>
-#include <SPI.h>
-#include <Adafruit_Sensor.h>
-#include "Adafruit_BME680.h"
+// #include <SPI.h>
+// #include <Adafruit_Sensor.h>
+// #include "Adafruit_BME680.h"
  
 #define BAT_PIN A0
 #define MOI_PIN A1
@@ -244,24 +244,24 @@ void getConduct(uint16_t* conductivity) {
   }
 }
 
-void getBME(float* temperature, float* humidity, float* pressure) {
-  bme.performReading();
-  *temperature = bme.temperature;
-  *humidity = bme.humidity;
-  *pressure = bme.pressure / 100.0;
+// void getBME(float* temperature, float* humidity, float* pressure) {
+//   bme.performReading();
+//   *temperature = bme.temperature;
+//   *humidity = bme.humidity;
+//   *pressure = bme.pressure / 100.0;
 
-  if (debug) {
-    Serial.print("Temperature: ");
-    Serial.print(*temperature);
-    Serial.println(" *C");
-    Serial.print("Humidity: ");
-    Serial.print(*humidity);
-    Serial.println(" %");
-    Serial.print("Pressure: ");
-    Serial.print(*pressure);
-    Serial.println(" hPa");
-  }
-}
+//   if (debug) {
+//     Serial.print("Temperature: ");
+//     Serial.print(*temperature);
+//     Serial.println(" *C");
+//     Serial.print("Humidity: ");
+//     Serial.print(*humidity);
+//     Serial.println(" %");
+//     Serial.print("Pressure: ");
+//     Serial.print(*pressure);
+//     Serial.println(" hPa");
+//   }
+// }
 
 void longSleep( uint32_t sleepInSeconds )
 {
