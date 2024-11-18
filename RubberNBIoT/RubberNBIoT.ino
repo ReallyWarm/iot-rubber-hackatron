@@ -1,10 +1,6 @@
 #include "LowPower.h"
 #include "AIS_NB_BC95.h"
 #include <SoftwareSerial.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <Adafruit_Sensor.h>
-#include "Adafruit_BME680.h"
 
 #define BAT_PIN A0
 #define MOI_PIN A1
@@ -31,7 +27,6 @@ const char deviceID = 'a';
 #define samplingTimes 5 // 5
 uint16_t battery = 0;
 SoftwareSerial mod(S51_RO, S51_DI);
-Adafruit_BME680 bme(&Wire);
 
 const float offsetPercent = 0.89; // offset of exceeded sleep time
 const uint32_t secInHour = 3600;
@@ -46,7 +41,6 @@ uint32_t rmSTime = (uint32_t)secInHour * 21; // total remaining
 uint32_t diSTime = 0; // this deep sleep instance
 
 AIS_NB_BC95 AISnb;
-UDPReceive dataResp;
 #define RESET_NB_PIN 4
 #define address "34.2.30.58"
 #define port "9999"
@@ -82,7 +76,7 @@ void loop() {
   switch (state) {
     case STATE_CALI_SLEEP:
       if (flag & DEBUG_MASK) Serial.println(F("Calibrate..."));
-      calibrateTime();
+      // calibrateTime();
       if (flag & TO_SLEEP_MASK) {
         // Set state to Deep Sleep
         flag = (flag & ~STATE_MASK) | (STATE_DEEP_SLEEP << STATE_SHIFT);
@@ -114,8 +108,10 @@ void loop() {
   }
 }
 
-bool calibrateTime() {
+void calibrateTime() {
+  UDPReceive dataResp;
   dataResp.data = "";
+  char asciiResp[100] = {0};
   uint32_t cnt = 0;
   uint8_t timeout = 0;
   UDPSend udp;
@@ -131,7 +127,7 @@ bool calibrateTime() {
   );
   udp = sendNBmsg(message, true);
 
-  while ((dataResp.data == "") || (strncmp("400", hexToAscii(dataResp.data).c_str(), 3) == 0)) {
+  while ((dataResp.data == "") || (strncmp("343030", dataResp.data.c_str(), 3) == 0)) {
     if (timeout >= maxTimeout) {
       Serial.println(F("Timeout!"));
       if (DEBUG_FLAG) AISnb.pingIP(address);
@@ -164,14 +160,15 @@ bool calibrateTime() {
     cnt++;
   }
 
-  String dataAscii = hexToAscii(dataResp.data);
+  hexToAscii(dataResp.data, asciiResp);
+  dataResp.data.remove(0);
   // Serial.println("# Receive : " + dataAscii);
-  String timeArray[2];
-  String serverTime = getTimeFromJson(dataAscii, timeArray);
+  uint8_t timeArray[2] = {12, 0};
+  getTimeFromJson(asciiResp, timeArray);
   delay(500);
 
-  uint8_t hour = (uint8_t) timeArray[0].toInt();
-  uint8_t min = (uint8_t) timeArray[1].toInt();
+  uint8_t hour = timeArray[0];
+  uint8_t min = timeArray[1];
   if (DEBUG_FLAG) showServerTime(hour, min);
   if ( (hour < wakeTime) && (hour >= sleepTime) ) {
     uint8_t remainHour = wakeTime - hour - 1;
@@ -222,8 +219,6 @@ void sampling() {
       delay(200);
       getPH();
       delay(200);
-      // getBME(&tmp, &hmd, &prs);
-      // delay(200);
       resetSensor();
       endSwitch();
       if (DEBUG_FLAG) Serial.print(F("Going minute "));
@@ -257,8 +252,8 @@ void sampling() {
     // Delay 15 minutes
     if (DEBUG_FLAG) Serial.println(F("15 minutes delay starting..."));
     delay(2000);
-    // longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
-    longSleep(((secInMinute * 5) - sendDataSec) * offsetPercent);
+    longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
+    // longSleep(((secInMinute * 2) - sendDataSec) * offsetPercent);
   }
   delay(100);
 }
@@ -269,7 +264,7 @@ UDPSend sendNBmsg(char * data, bool resend) {
   uint8_t retry = 0;
   udp.status = false;
   udp = AISnb.sendUDPmsgStr(address, port, data);
-  if (!udp.status) {
+  if (!udp.status || udp.status == NULL) {
     resetConnection(true);
     if (resend) {
       Serial.println(F("Resending msg..."));
@@ -288,15 +283,6 @@ UDPSend sendNBmsg(char * data, bool resend) {
 void resetConnection(bool force) {
   if (!AISnb.getNBConnect() || force) {
     Serial.println(F("Resetting NB"));
-    // pinMode(RESET_NB_PIN, OUTPUT);
-    // delay(100);
-    // digitalWrite(RESET_NB_PIN, HIGH);
-    // delay(200);
-    // digitalWrite(RESET_NB_PIN, LOW);
-    // delay(100);
-    // pinMode(RESET_NB_PIN, INPUT);
-    // delay(100);
-    // AISnb.setupDevice(port);
     AISnb.rebootModule();
     delay(10000);
     if (DEBUG_FLAG) AISnb.pingIP(address);
@@ -321,25 +307,47 @@ void longSleep( uint32_t sleepInSeconds )
   }
 }
 
-String hexToAscii(String hex) {
-  String ascii = "";
-  for (int i = 0; i < hex.length(); i += 2) {
-    String part = hex.substring(i, i + 2);
-    char ch = strtol(part.c_str(), NULL, 16);
-    ascii += ch;
+void hexToAscii(const String& hexStr, char* asciiArr) {
+  uint8_t length = (uint8_t) hexStr.length();
+  
+  for (int i = 0; i < length; i += 2) {
+    char highNibble = hexStr[i];
+    char lowNibble = hexStr[i + 1];
+    
+    byte byteVal = (hexCharToByte(highNibble) << 4) | hexCharToByte(lowNibble);
+    asciiArr[i / 2] = byteVal;
   }
-  return ascii;
+  asciiArr[length / 2] = '\0';
+  Serial.println(asciiArr);
+
 }
 
-String getTimeFromJson(String json, String timeArray[]) {
-  int startPos = json.indexOf("\"timestamp\": \"") + 14;
-  int endPos = json.indexOf("\"", startPos);
-  String time = json.substring(startPos, endPos);
+byte hexCharToByte(char hexChar) {
+  if (hexChar >= '0' && hexChar <= '9') {
+    return hexChar - '0'; 
+  } 
+  else if (hexChar >= 'A' && hexChar <= 'F') {
+    return hexChar - 'A' + 10;
+  }
+  else if (hexChar >= 'a' && hexChar <= 'f') {
+    return hexChar - 'a' + 10;
+  }
+  return 0;
+}
 
-  int colonPos = time.indexOf(':');
-  timeArray[0] = time.substring(0, colonPos);
-  timeArray[1] = time.substring(colonPos + 1);
-  return time;
+void getTimeFromJson(const char* jsonStr, uint8_t* timeArr) {
+  const char* timeStart = strstr(jsonStr, "\"ts\": \"");
+  if (timeStart != NULL) {
+    timeStart += 7;
+    const char* timeEnd = strchr(timeStart, '\"');
+    
+    if (timeEnd != NULL) {
+      char timeStr[6]; 
+      strncpy(timeStr, timeStart, timeEnd - timeStart);
+      timeStr[timeEnd - timeStart] = '\0'; 
+      sscanf(timeStr, "%d:%d", &timeArr[0], &timeArr[1]);
+    }
+  }
 }
 
 void startSwitch() {
@@ -355,24 +363,15 @@ void endSwitch() {
 }
 
 void startSensor() {
-  Wire.begin();
   mod.begin(4800);
   pinMode(S51_RE, OUTPUT);
   pinMode(S51_DE, OUTPUT);
-  // bool bmeFound = bme.begin();
-  // if (!bmeFound && debug) Serial.println("Could not find a valid BME680 sensor, check wiring!");
-  // bme.setTemperatureOversampling(BME680_OS_8X);
-  // bme.setHumidityOversampling(BME680_OS_2X);
-  // bme.setPressureOversampling(BME680_OS_4X);
-  // bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-  // bme.setGasHeater(320, 150);
   while (mod.available()) { 
     mod.read(); 
   }
 }
 
 void resetSensor() {
-  Wire.end();
   mod.end();
   digitalWrite(S51_RE, LOW);
   digitalWrite(S51_DE, LOW);
@@ -490,27 +489,6 @@ void getConduct() {
       Serial.print(F("Conductivity: "));
       Serial.println((cdResp[3] << 8) | cdResp[4]);
     }
-  }
-}
-
-void getBME() {
-  bme.performReading();
-  temperature = (uint16_t) ((99.99 + temperature) * 100) / 2;
-  humidity = (uint16_t) ((99.99 + humidity) * 100) / 2;
-  pressure = (uint16_t) ((99.99 + pressure) * 100) / 2;
-  // humidity += bme.humidity;
-  // pressure += bme.pressure / 100.0;
-
-  if (DEBUG_FLAG) {
-    Serial.print(F("Temperature: "));
-    Serial.print(bme.temperature);
-    Serial.println(F(" *C"));
-    Serial.print(F("Humidity: "));
-    Serial.print(bme.humidity);
-    Serial.println(F(" %"));
-    Serial.print(F("Pressure: "));
-    Serial.print(bme.pressure / 100.0);
-    Serial.println(F(" hPa"));
   }
 }
 
