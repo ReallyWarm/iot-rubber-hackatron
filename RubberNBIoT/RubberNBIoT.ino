@@ -454,7 +454,7 @@ void getPH() {
     }
 
     uint16_t pH = (phResp[3] << 8) | phResp[4];
-    pHValue += pH / 10.0;
+    pHValue += pH * 10;
 
     if (DEBUG_FLAG) {
       Serial.print(F("pH: "));
