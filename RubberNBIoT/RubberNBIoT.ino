@@ -82,6 +82,7 @@ void loop() {
   switch (state) {
     case STATE_CALI_SLEEP:
       if (flag & DEBUG_MASK) Serial.println(F("Calibrate..."));
+      calibrateTime();
       if (flag & TO_SLEEP_MASK) {
         // Set state to Deep Sleep
         flag = (flag & ~STATE_MASK) | (STATE_DEEP_SLEEP << STATE_SHIFT);
