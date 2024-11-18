@@ -51,14 +51,14 @@ UDPReceive dataResp;
 #define address "34.2.30.58"
 #define port "9999"
 #define cmdTime "{\"c\":\"t\",\"d\":\"%c\"}"
-#define cmdDataStart "{\"c\":\"d\",\"d\":\"%c%05u%05u%05u%05u%05u%05u%05u%05u%05u%05u\"}"
+#define cmdDataStart "{\"c\":\"d\",\"d\":\"%c%05u%05u%05u%05u%05u%05u%05u\"}"
 #define DEBUG_FLAG ((flag & DEBUG_MASK) != 0) // Use a unique name instead of "debug"
 #define TO_SLEEP_FLAG ((flag & TO_SLEEP_MASK) != 0) // Use unique names for all macros
 const uint16_t millisTimeout = 30000;
 const uint8_t maxTimeout = 20;
 
-uint16_t moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0, pHValue = 0, temperature = 0, humidity = 0, pressure = 0;
-char message[75];
+uint16_t moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0, pHValue = 0;
+char message[60];
 
 uint8_t flag = 0b01100000; // to sleep, debug , state (D, S, C) * 2, res, res, res, res
 
@@ -203,7 +203,7 @@ void sampling() {
 
   for (int cycle = 0; cycle < samplingCycle; cycle++) {
     moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0;
-    pHValue = 0, temperature = 0, humidity = 0, pressure = 0;
+    pHValue = 0;
     delayCounter = 0;
 
     if (DEBUG_FLAG) Serial.print(F("Iteration: "));
@@ -248,7 +248,7 @@ void sampling() {
     snprintf(
         message, sizeof(message),
         cmdDataStart,
-        deviceID, moisture,conductivity, nitrogen, phosphorus, battery, potassium, pHValue, temperature, humidity, pressure
+        deviceID, moisture,conductivity, nitrogen, phosphorus, battery, potassium, pHValue
     );
     Serial.println(message);
     udp = sendNBmsg(message, true);
@@ -260,6 +260,7 @@ void sampling() {
     longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
     // longSleep(((secInMinute * 15) - sendDataSec) * offsetPercent);
   }
+  // longSleep(((secInMinute * 20) - sendDataSec) * offsetPercent);
   delay(100);
 }
 
@@ -490,27 +491,6 @@ void getConduct() {
       Serial.print(F("Conductivity: "));
       Serial.println((cdResp[3] << 8) | cdResp[4]);
     }
-  }
-}
-
-void getBME() {
-  bme.performReading();
-  temperature = (uint16_t) ((99.99 + temperature) * 100) / 2;
-  humidity = (uint16_t) ((99.99 + humidity) * 100) / 2;
-  pressure = (uint16_t) ((99.99 + pressure) * 100) / 2;
-  // humidity += bme.humidity;
-  // pressure += bme.pressure / 100.0;
-
-  if (DEBUG_FLAG) {
-    Serial.print(F("Temperature: "));
-    Serial.print(bme.temperature);
-    Serial.println(F(" *C"));
-    Serial.print(F("Humidity: "));
-    Serial.print(bme.humidity);
-    Serial.println(F(" %"));
-    Serial.print(F("Pressure: "));
-    Serial.print(bme.pressure / 100.0);
-    Serial.println(F(" hPa"));
   }
 }
 
