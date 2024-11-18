@@ -34,7 +34,7 @@ const uint32_t secInHour = 3600;
 const uint32_t secInMinute = 60;
 
 #define wakeTime 24 // wake up time 24
-#define sleepTime 23 // start sleep time 3
+#define sleepTime 3 // start sleep time 3
 #define sleepHour 6 // max hour to sleep
 #define timeoutSleep 3 // hour to sleep when timeout
 uint32_t tdSTime = 0; // total deep sleep
@@ -77,7 +77,7 @@ void loop() {
   // Extract the current state from the flag
   uint8_t state = (flag & STATE_MASK) >> STATE_SHIFT;
 
-  if (flag & TO_SLEEP_MASK) {
+  if (!(flag & TO_SLEEP_MASK)) {
     flag = (flag & ~STATE_MASK) | (STATE_SAMPLING << STATE_SHIFT);
   }
 
@@ -85,27 +85,30 @@ void loop() {
     case STATE_CALI_SLEEP:
       if (flag & DEBUG_MASK) Serial.println(F("Calibrate..."));
       calibrateTime();
-      EEPROM.put(0, flag);
-      resetFunc();
-      if (flag & TO_SLEEP_MASK) {
-        // Set state to Deep Sleep
-        flag = (flag & ~STATE_MASK) | (STATE_DEEP_SLEEP << STATE_SHIFT);
-      } else {
-        // Set state to Sampling
+      if (EEPROM.read(0) != flag) {
+        EEPROM.put(0, flag);
+      }
+      if (tdSTime >= ((uint32_t)secInHour * 21)) {
+        // Transition to Sampling
         flag = (flag & ~STATE_MASK) | (STATE_SAMPLING << STATE_SHIFT);
+        if (EEPROM.read(0) != flag) {
+          EEPROM.put(0, flag);
+        }
         resetTimeCount();
       }
+      if (((flag & STATE_MASK) >> STATE_SHIFT) == STATE_DEEP_SLEEP) {
+        break;
+      }
+      resetFunc();
       break;
 
     case STATE_DEEP_SLEEP:
+      // Transition to Calibrate Sleep
       if (flag & DEBUG_MASK) Serial.println(F("Deep Sleep..."));
       deepSleep();
-      // Transition to Calibrate Sleep
       flag = (flag & ~STATE_MASK) | (STATE_CALI_SLEEP << STATE_SHIFT);
-      if (tdSTime >= ((uint32_t)secInHour * 21)) {
-        // Transition to Sampling if the condition is met
-        flag = (flag & ~STATE_MASK) | (STATE_SAMPLING << STATE_SHIFT);
-        resetTimeCount();
+      if (EEPROM.read(0) != flag) {
+        EEPROM.put(0, flag);
       }
       break;
 
@@ -187,6 +190,8 @@ void calibrateTime() {
     rmSTime = (remainHour * secInHour) + (remainMin * secInMinute);
     diSTime = (rmSTime > (sleepHour * secInHour) ) ? (sleepHour * secInHour) : rmSTime;
     if (DEBUG_FLAG) showTimeInfo();
+    delay(1000);
+    flag = (flag & ~STATE_MASK) | (STATE_DEEP_SLEEP << STATE_SHIFT);
     flag |= (1 << 7);
     return ;
   }
@@ -238,8 +243,8 @@ void sampling() {
       if (DEBUG_FLAG) Serial.print(i + 1);
       if (DEBUG_FLAG) Serial.println(F(" sleep"));
       delay(1000);
-      longSleep((secInMinute - getSensorSec - 45) * offsetPercent); // in testing -45
-      // longSleep((secInMinute - getSensorSec) * offsetPercent); 
+      // longSleep((secInMinute - getSensorSec - 45) * offsetPercent); // in testing -45
+      longSleep((secInMinute - getSensorSec) * offsetPercent); 
     }
     startSwitch();
     getBattery();
@@ -265,10 +270,13 @@ void sampling() {
     // Delay 15 minutes
     if (DEBUG_FLAG) Serial.println(F("15 minutes delay starting..."));
     delay(2000);
-    longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
-    // longSleep(((secInMinute * 2) - sendDataSec) * offsetPercent);
+    // longSleep(((secInMinute - 40) - sendDataSec) * offsetPercent); // in testing -40
+    longSleep(((secInMinute * 15) - sendDataSec) * offsetPercent);
   }
+  Serial.println(F("Offsetting..."));
+  delay(1000);
   longSleep(((secInMinute * 5) - sendDataSec) * offsetPercent);
+  flag = (flag & ~STATE_MASK) | (STATE_CALI_SLEEP << STATE_SHIFT);
   flag |= (1 << 7);
   EEPROM.put(0, flag);
   resetFunc();
