@@ -50,7 +50,7 @@ AIS_NB_BC95 AISnb;
 #define DEBUG_FLAG ((flag & DEBUG_MASK) != 0) // Use a unique name instead of "debug"
 #define TO_SLEEP_FLAG ((flag & TO_SLEEP_MASK) != 0) // Use unique names for all macros
 const uint16_t millisTimeout = 30000;
-const uint8_t maxTimeout = 20;
+const uint8_t maxTimeout = 10;
 
 uint16_t moisture = 0, conductivity = 0, nitrogen = 0, phosphorus = 0, potassium = 0, pHValue = 0, temperature = 0, humidity = 0, pressure = 0;
 char message[75];
@@ -103,13 +103,14 @@ void loop() {
       break;
 
     case STATE_DEEP_SLEEP:
-      // Transition to Calibrate Sleep
       if (flag & DEBUG_MASK) Serial.println(F("Deep Sleep..."));
       deepSleep();
+      // Transition to Calibrate Sleep
       flag = (flag & ~STATE_MASK) | (STATE_CALI_SLEEP << STATE_SHIFT);
       if (EEPROM.read(0) != flag) {
         EEPROM.put(0, flag);
       }
+      resetFunc();
       break;
 
     case STATE_SAMPLING:
@@ -156,9 +157,6 @@ void calibrateTime() {
     }
     if (cnt >= millisTimeout) {
       Serial.println(F("Resending from timeout..."));
-      if (timeout == maxTimeout / 2) {
-        resetConnection(true);
-      }
       snprintf(
         message, sizeof(message),
         cmdTime,
@@ -275,7 +273,7 @@ void sampling() {
   }
   Serial.println(F("Offsetting..."));
   delay(1000);
-  longSleep(((secInMinute * 5) - sendDataSec) * offsetPercent);
+  longSleep((secInMinute * 5) * offsetPercent);
   flag = (flag & ~STATE_MASK) | (STATE_CALI_SLEEP << STATE_SHIFT);
   flag |= (1 << 7);
   EEPROM.put(0, flag);
